@@ -19,6 +19,17 @@ enpire-run-agent = "enpire.env.forge.run_agent:main"
 enpire-run-script = "enpire.env.forge.run_script:main"
 
 [project.optional-dependencies]
+# Read-only GEAR-SONIC transports; camera SDK remains in its existing environment.
+g1 = [
+    "msgpack>=1.0",
+    "opencv-python>=4.10,<5",
+    "pyzmq>=27",
+]
+# Offline LeRobot Parquet inspection, independent of robot transports.
+g1-dataset = [
+    "pyarrow>=19",
+]
+
 # Lightweight clients for remote perception services. These do not install
 # local model weights or a CUDA runtime.
 vision = [
