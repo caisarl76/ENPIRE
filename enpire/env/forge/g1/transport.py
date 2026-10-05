@@ -48,8 +48,13 @@ def decode_state(raw: bytes, *, hand: str) -> dict:
     if hand == "dex3":
         left = _vector(data, "left_hand_q", 7)
         right = _vector(data, "right_hand_q", 7)
+        # Keep raw motor order in hand_q; only state uses the dataset order.
+        # Dex3 telemetry is thumb0/1/2, index0/1, middle0/1.
+        # The dataset stores index0/1, middle0/1, thumb0/1/2.
+        left_dataset = left[3:] + left[:3]
+        right_dataset = right[3:] + right[:3]
         result.update(left_hand_q=left, right_hand_q=right,
-                      state=body[:22] + left + body[22:] + right)
+                      state=body[:22] + left_dataset + body[22:] + right_dataset)
     # Firmware variants may add torque or visualization fields; no map-size assumptions.
     return result
 

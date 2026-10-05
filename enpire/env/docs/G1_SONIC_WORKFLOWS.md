@@ -60,8 +60,16 @@ Missing, malformed, or stalled streams fail. `observe --camera-only` can pass
 while SONIC is offline. Full observation requires its existing `g1_debug` state
 publisher; the tool never starts it. Camera reports describe decoded RGB images.
 Dex3 state interleaves the left hand before the right arm to match the dataset's
-43-joint layout. Other hand types report the measured 29-joint body only.
+43-joint layout. Raw `left_hand_q` and `right_hand_q` preserve SONIC's Dex3 motor
+order (thumb 0/1/2, index 0/1, middle 0/1). The combined `state` reorders each hand
+to the dataset layout (index 0/1, middle 0/1, thumb 0/1/2).
+Other hand types report the measured 29-joint body only.
 No unmeasured hand or end-effector pose is filled with artificial zeros.
+
+The pinned ZMQ publisher restores `default_angles` and hardware body ordering
+before sending `body_q`. Use the published angles directly for joint kinematics.
+The controller's internal logger stores relative angles in IsaacLab ordering;
+that internal representation differs from the outgoing message.
 
 Receipt liveness does not prove cross-host clock synchronization or calibrated
 image/state alignment. `preflight` exits with code 2 and `motion_ready: false`
@@ -78,6 +86,46 @@ finite values, stream modes, and exact Dex3 joint ordering. It reports arm/hand
 movement ranges and mode counts. It does not mutate the dataset, replay actions,
 or assign grasp/handover success labels. Review RGB videos alongside this report
 to establish which hand and task phases the demonstrations actually show.
+
+### Export and preview recorded poses
+
+The workstation can export a pickle-free NPZ containing all validated episodes:
+
+```bash
+enpire g1 export-preview --dataset "$DATASET_ROOT" --output "$PREVIEW_NPZ"
+```
+
+Export validates joint order, episode/frame identity, finite values, advancing
+timestamps, and root/EEF unit quaternions. The output must be a new file. It
+includes no fabricated root translation or command packets.
+
+Use an existing simulation Python with MuJoCo, NumPy, and OpenCV to run the
+standalone preview script. This script supports Python 3.10+ independently of
+the ENPIRE Python 3.11 installation. For CPU rendering on a Linux workstation
+with Mesa EGL, configure the existing interpreter and Mesa vendor JSON paths:
+
+```bash
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless \
+  __EGL_VENDOR_LIBRARY_FILENAMES="$MESA_EGL_VENDOR_JSON" \
+  "$MUJOCO_PYTHON" "$ENPIRE_ROOT/enpire/env/forge/g1/preview.py" \
+  --input "$PREVIEW_NPZ" --model "$G1_MODEL_XML" --output "$PREVIEW_DIR" \
+  --render-episode 0 --stride 2
+```
+
+The artifact directory must be new. All poses are mapped to model joints by
+name and inspected with `mj_forward`; no dynamics steps or transport sockets
+are used. `validation.json` reports model-limit excess and raw joint FK versus
+recorded EEF values. The paired AVI and PNG show saved RGB beside the pose model.
+Stride 2 produces a 25 fps preview of a 50 fps recording at its recorded speed.
+Rendered root position stays at the model's nominal reference; root quaternion
+comes from the recording. Object and fixture geometry are absent from the model.
+
+The exporter uses supplemental joint clamping when computing EEF features.
+Those EEF values can differ from forward kinematics of raw joint observations,
+particularly near the shoulder-roll boundary. The preview preserves raw angles
+and reports that discrepancy. Neither a visually plausible pose nor a matching
+EEF value establishes calibrated image/state alignment, balance, collision
+clearance, grasp retention, handover success, or physical motion readiness.
 
 The intended handover phases are object localization, approach, grasp, lift,
 palm-up presentation, recipient acquisition, and retreat. A grasp must remain

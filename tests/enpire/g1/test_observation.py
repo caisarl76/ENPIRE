@@ -28,10 +28,14 @@ def telemetry(**updates):
     return b"g1_debug" + msgpack.packb(data, use_bin_type=True)
 
 
-def test_dex3_state_interleaves_left_hand_before_right_arm():
+def test_dex3_state_maps_thumb_first_telemetry_to_dataset_joint_order():
     obs = decode_state(telemetry(motor_torque=[0.0] * 29), hand="dex3")
-    assert obs["state"][20:32] == [20, 21, 100, 101, 102, 103, 104, 105, 106, 22, 23, 24]
-    assert obs["state"][-7:] == [200, 201, 202, 203, 204, 205, 206]
+    # SONIC forwards the Dex3 motor order: thumb0/1/2, index0/1, middle0/1.
+    # LeRobot stores index0/1, middle0/1, thumb0/1/2 after each arm.
+    assert obs["state"][20:32] == [20, 21, 103, 104, 105, 106, 100, 101, 102, 22, 23, 24]
+    assert obs["state"][-7:] == [203, 204, 205, 206, 200, 201, 202]
+    assert obs["left_hand_q"] == [100, 101, 102, 103, 104, 105, 106]
+    assert obs["right_hand_q"] == [200, 201, 202, 203, 204, 205, 206]
     assert len(obs["state"]) == 43
 
 

@@ -121,3 +121,62 @@ def inspect_dataset(root: Path) -> dict:
             "EEF frames, hand semantics, camera calibration, and timing require station validation",
         ],
     }
+
+
+def export_preview(root: Path, output: Path) -> dict:
+    """Create a portable, pickle-free pose bundle for an existing simulation env."""
+    import numpy as np
+    import pyarrow.parquet as pq
+
+    root = Path(root).resolve()
+    report = inspect_dataset(root)
+    info = json.loads((root / "meta/info.json").read_text())
+    if info["features"].get("observation.root_orientation", {}).get("shape") != [4]:
+        raise ValueError("Preview requires observation.root_orientation metadata shape [4]")
+    columns = {"state": "observation.state", "eef_state": "observation.eef_state",
+               "root_orientation": "observation.root_orientation", "timestamp": "timestamp",
+               "episode_index": "episode_index", "frame_index": "frame_index",
+               "stream_mode": "teleop.stream_mode"}
+    collected = {key: [] for key in columns}
+    videos = []
+    for episode in report["episodes"]:
+        index, length = episode["episode_index"], episode["frames"]
+        params = {"episode_chunk": index // info.get("chunks_size", 1000),
+                  "episode_index": index, "video_key": "observation.images.ego_view"}
+        path = root / info["data_path"].format(**params)
+        table = pq.read_table(path, columns=list(columns.values())).to_pydict()
+        for key, column in columns.items():
+            array = np.asarray(table[column], dtype=np.float64)
+            if key in ("timestamp", "episode_index", "frame_index", "stream_mode"):
+                array = array.reshape(-1)
+            if not np.isfinite(array).all():
+                raise ValueError(f"Episode {index}: preview {column} must be finite")
+            collected[key].append(array)
+        quat = collected["root_orientation"][-1]
+        if quat.shape != (length, 4) or np.any(np.abs(np.linalg.norm(quat, axis=1) - 1) > 0.01):
+            raise ValueError(f"Episode {index}: root orientation must be a unit quaternion in wxyz order")
+        for offset in (3, 10):
+            eef_quat = collected["eef_state"][-1][:, offset:offset+4]
+            if np.any(np.abs(np.linalg.norm(eef_quat, axis=1) - 1) > 0.01):
+                raise ValueError(f"Episode {index}: EEF orientation must be a unit quaternion in wxyz order")
+        stamp = collected["timestamp"][-1]
+        if stamp.shape != (length,) or np.any(np.diff(stamp) <= 0):
+            raise ValueError(f"Episode {index}: timestamps must advance")
+        template = info.get("video_path")
+        video = (root / template.format(**params)).resolve() if template else None
+        if video and not video.is_relative_to(root):
+            raise ValueError("Preview video_path must remain inside the dataset root")
+        videos.append(str(video) if video else "")
+    arrays = {key: np.concatenate(value) for key, value in collected.items()}
+    for key in ("episode_index", "frame_index", "stream_mode"):
+        arrays[key] = arrays[key].astype(np.int64)
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("xb") as stream:
+        np.savez_compressed(stream, schema_version=np.int64(1), fps=np.float64(report["fps"]),
+                            joint_names=np.asarray(report["joint_names"]),
+                            video_paths=np.asarray(videos), dataset=str(root), **arrays)
+    return {"schema_version": 1, "bundle": str(output.resolve()),
+            "episodes": report["checked_episodes"], "frames": report["checked_frames"],
+            "motion_enabled": False, "root_translation_measured": False,
+            "physical_success_verified": False}

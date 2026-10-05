@@ -86,6 +86,18 @@ def _inspect_dataset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_preview(args: argparse.Namespace) -> int:
+    from .dataset import export_preview
+
+    try:
+        report = export_preview(args.dataset, args.output)
+    except (ImportError, OSError, ValueError) as error:
+        _emit({"ok": False, "error": str(error), "motion_enabled": False}, None)
+        return 2
+    _emit(report, None)
+    return 0
+
+
 def add_g1_parser(commands) -> None:
     parser = commands.add_parser("g1", help="Inspect G1 SONIC streams and datasets without motion")
     actions = parser.add_subparsers(dest="g1_command", required=True)
@@ -108,3 +120,7 @@ def add_g1_parser(commands) -> None:
     dataset.add_argument("--dataset", type=Path, required=True)
     dataset.add_argument("--output", type=Path)
     dataset.set_defaults(handler=_inspect_dataset)
+    preview = actions.add_parser("export-preview", help="Export recorded poses for offline model inspection")
+    preview.add_argument("--dataset", type=Path, required=True)
+    preview.add_argument("--output", type=Path, required=True, help="New pickle-free NPZ file")
+    preview.set_defaults(handler=_export_preview)

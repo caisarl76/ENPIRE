@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from enpire.cli import main
+from enpire.env.forge.g1 import dataset as dataset_module
 from enpire.env.forge.g1.dataset import inspect_dataset
 
 
@@ -136,3 +137,73 @@ def test_bad_path_template_returns_actionable_cli_failure(tmp_path, capsys):
     assert report["ok"] is False
     assert "data_path template" in report["error"]
     assert report["motion_enabled"] is False
+
+
+def test_preview_export_preserves_named_joints_and_measured_orientation(tmp_path):
+    pytest.importorskip("pyarrow")
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "dataset"
+    root.mkdir()
+    info, values, path = fixture_dataset(root)
+    info["features"]["observation.root_orientation"] = {"shape": [4]}
+    info["video_path"] = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
+    values["observation.root_orientation"] = [[1, 0, 0, 0]] * 3
+    values["observation.eef_state"] = [[0, 0, 0, 1, 0, 0, 0] * 2] * 3
+    values["timestamp"] = [0, 0.02, 0.04]
+    (root / "meta/info.json").write_text(json.dumps(info))
+    pq.write_table(pa.table(values), path)
+    output = tmp_path / "preview.npz"
+    report = dataset_module.export_preview(root, output)
+    with np.load(output, allow_pickle=False) as bundle:
+        assert bundle["joint_names"][22] == "left_hand_index_0_joint"
+        assert bundle["joint_names"][29] == "right_shoulder_pitch_joint"
+        assert bundle["state"][2, 22] == 10
+        assert bundle["state"][2, 29] == 2
+        assert bundle["root_orientation"].tolist() == [[1, 0, 0, 0]] * 3
+        assert bundle["frame_index"].tolist() == [0, 1, 2]
+        assert "root_translation" not in bundle.files
+    assert report["motion_enabled"] is False
+    assert report["root_translation_measured"] is False
+    with pytest.raises(FileExistsError):
+        dataset_module.export_preview(root, output)
+
+
+def test_preview_export_rejects_unusable_root_orientation_without_writing(tmp_path):
+    pytest.importorskip("pyarrow")
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "dataset"
+    root.mkdir()
+    info, values, path = fixture_dataset(root)
+    info["features"]["observation.root_orientation"] = {"shape": [4]}
+    values["observation.root_orientation"] = [[0, 0, 0, 0]] * 3
+    values["observation.eef_state"] = [[0, 0, 0, 1, 0, 0, 0] * 2] * 3
+    values["timestamp"] = [0, 0.02, 0.04]
+    (root / "meta/info.json").write_text(json.dumps(info))
+    pq.write_table(pa.table(values), path)
+    output = tmp_path / "invalid.npz"
+    with pytest.raises(ValueError, match="unit quaternion"):
+        dataset_module.export_preview(root, output)
+    assert not output.exists()
+
+
+def test_preview_export_rejects_zero_eef_quaternions_without_creating_output(tmp_path):
+    pytest.importorskip("pyarrow")
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "dataset"
+    root.mkdir()
+    info, values, path = fixture_dataset(root)
+    info["features"]["observation.root_orientation"] = {"shape": [4]}
+    values["observation.root_orientation"] = [[1, 0, 0, 0]] * 3
+    values["timestamp"] = [0, 0.02, 0.04]
+    (root / "meta/info.json").write_text(json.dumps(info))
+    pq.write_table(pa.table(values), path)
+    output = tmp_path / "bad-eef.npz"
+    with pytest.raises(ValueError, match="EEF.*unit quaternion"):
+        dataset_module.export_preview(root, output)
+    assert not output.exists()
