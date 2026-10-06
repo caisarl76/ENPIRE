@@ -127,6 +127,49 @@ and reports that discrepancy. Neither a visually plausible pose nor a matching
 EEF value establishes calibrated image/state alignment, balance, collision
 clearance, grasp retention, handover success, or physical motion readiness.
 
+### Qualify the task adapter without a robot
+
+The selected bottle-task architecture is a staged ENPIRE supervisor around a
+SONIC motion-token actor. The actor consumes fresh images/state plus a phase/goal
+and returns one 64-value whole-body token and two Dex3 hand targets. SONIC keeps
+low-level body and hand control. Tokens can affect leg behavior, so the task
+must exclusively own the selected SONIC input session. A compatible learned
+policy or validated pose-to-token encoder is still needed for autonomous picking.
+
+The socket-free reference adapter reuses the existing local SONIC byte builder:
+
+```bash
+enpire g1 shadow-adapter --dataset "$DATASET_ROOT" \
+  --encoder "$SONIC_ROOT/gear_sonic/utils/teleop/zmq/zmq_planner_sender.py" \
+  --output "$NEW_QUALIFICATION_JSON"
+```
+
+Token-only packets require protocol **v4**, with a 1,280-byte header, token_state
+float32 [1,64], frame_index int64 [1], and native thumb/index/middle Dex3 targets
+float32 [1,7]. Version 3 instead requires body/SMPL/joint motion fields. A byte
+round-trip of token fields under v3 does not establish receiver compatibility.
+
+The reference actor uses saved POSE samples. The runner uses synthetic local
+receipt clocks, models exclusive writer leases in memory, blocks standard-library
+socket creation, and independently checks the v4 packet fields. It stops each
+reference session at a mode or episode boundary and never saves command packets.
+Its result does not verify image/state synchronization or a live receiver.
+
+OfflineAdapter requires two advancing samples from each source before start.
+Repeated source data cannot refresh liveness. Its watchdog and output checks
+latch faults on stale state/camera/actor inputs, source resets, lost ownership,
+invalid targets, and encoder errors. Data age and ownership are checked again
+after encoding. Overlapping outputs latch a fault; stop can cancel an output
+still being encoded. Real runners must call tick even when the actor is silent.
+Explicit stop and faults end the session; resumption requires a new instance
+and explicit start. Software timing limits are qualification parameters.
+
+Stopping local output does **not** clear receiver-held tokens or establish a
+safe robot fallback. Receiver disconnect behavior, real publisher arbitration,
+policy/checkpoint compatibility, hand limits, transition ramps, balance, and
+reset remain prerequisites before a motion-capable transport is implemented.
+This command has no transport endpoint or motion-enable option.
+
 The intended handover phases are object localization, approach, grasp, lift,
 palm-up presentation, recipient acquisition, and retreat. A grasp must remain
 supported while preparing the presentation. Finger spreading/release needs

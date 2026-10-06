@@ -98,6 +98,25 @@ def _export_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _shadow_adapter(args: argparse.Namespace) -> int:
+    from .shadow import qualify_dataset
+
+    try:
+        if args.output.exists():
+            raise FileExistsError(f"Report already exists: {args.output}")
+        report = qualify_dataset(args.dataset, args.encoder)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("x") as stream:
+            stream.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    except (ImportError, OSError, ValueError) as error:
+        _emit({"ok": False, "error": str(error), "motion_enabled": False}, None)
+        return 2
+    _emit({"ok": True, "report": str(args.output.resolve()),
+           "pose_records_checked": report["pose_records_checked"],
+           "pose_sessions": report["pose_sessions"], "motion_enabled": False}, None)
+    return 0
+
+
 def add_g1_parser(commands) -> None:
     parser = commands.add_parser("g1", help="Inspect G1 SONIC streams and datasets without motion")
     actions = parser.add_subparsers(dest="g1_command", required=True)
@@ -124,3 +143,8 @@ def add_g1_parser(commands) -> None:
     preview.add_argument("--dataset", type=Path, required=True)
     preview.add_argument("--output", type=Path, required=True, help="New pickle-free NPZ file")
     preview.set_defaults(handler=_export_preview)
+    shadow = actions.add_parser("shadow-adapter", help="Qualify recorded v4 outputs in memory; no sockets")
+    shadow.add_argument("--dataset", type=Path, required=True)
+    shadow.add_argument("--encoder", type=Path, required=True, help="Local SONIC zmq_planner_sender.py")
+    shadow.add_argument("--output", type=Path, required=True, help="New summary JSON; no command packets")
+    shadow.set_defaults(handler=_shadow_adapter)
