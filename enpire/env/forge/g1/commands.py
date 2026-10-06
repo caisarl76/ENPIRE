@@ -53,6 +53,11 @@ def _probe(args: argparse.Namespace) -> tuple[dict, dict]:
                                image_dtype=str(values[-1]["image"].dtype), image_color_order="RGB",
                                depth_verified=False)
             else:
+                source_time_available = values[-1]["source_timestamp_available"]
+                summary.update(first_index=values[0]["index"], last_index=values[-1]["index"],
+                               source_timestamp_available=source_time_available,
+                               timestamp_clock=values[-1]["timestamp_clock"],
+                               liveness_basis="source_index_and_timestamp" if source_time_available else "source_index")
                 summary["last_observation"] = {k: v for k, v in values[-1].items()
                                                if k != "received_monotonic"}
             observations[stream] = summary

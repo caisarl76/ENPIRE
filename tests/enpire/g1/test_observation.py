@@ -53,6 +53,8 @@ def test_other_hands_do_not_create_a_dex3_observation(hand):
     {"base_quat": [0.0] * 4},
     {"index": -1},
     {"ros_timestamp": math.inf},
+    {"ros_timestamp": -1.0},
+    {"ros_timestamp": None},
 ])
 def test_invalid_telemetry_cannot_be_used_as_an_observation(updates):
     with pytest.raises(ValueError):
@@ -62,6 +64,132 @@ def test_invalid_telemetry_cannot_be_used_as_an_observation(updates):
 def test_state_rejects_wrong_topic():
     with pytest.raises(ValueError):
         decode_state(b"robot_config" + msgpack.packb({}), hand="dex3")
+
+
+def test_zero_ros_timestamp_is_explicitly_unavailable_not_a_fabricated_time():
+    observation = decode_state(telemetry(ros_timestamp=0.0), hand="dex3")
+    assert observation["timestamp"] is None
+    assert observation["raw_ros_timestamp"] == 0.0
+    assert observation["source_timestamp_available"] is False
+    assert observation["timestamp_clock"] is None
+
+
+@pytest.fixture
+def telemetry_source():
+    """Exercise the real subscription transport with caller-provided source data."""
+    zmq = pytest.importorskip("zmq")
+    context = zmq.Context()
+    publisher = context.socket(zmq.PUB)
+    port = publisher.bind_to_random_port("tcp://127.0.0.1")
+    stop = threading.Event()
+    threads = []
+
+    def start(message):
+        def send():
+            index = 1
+            while not stop.wait(0.01):
+                publisher.send(message(index))
+                index += 1
+
+        thread = threading.Thread(target=send)
+        thread.start()
+        threads.append(thread)
+        return f"tcp://127.0.0.1:{port}"
+
+    yield start
+    stop.set()
+    for thread in threads:
+        thread.join()
+    publisher.close(linger=0)
+    context.term()
+
+
+def test_live_state_with_unavailable_ros_time_uses_advancing_real_indices(telemetry_source):
+    endpoint = telemetry_source(lambda index: telemetry(index=index, ros_timestamp=0.0))
+    with Subscriber(endpoint, "state", hand="dex3") as reader:
+        samples = reader.read_many(3, 2.0)
+    assert len(samples) == 3
+    assert all(a["index"] < b["index"] for a, b in zip(samples, samples[1:]))
+    assert all(sample["timestamp"] is None for sample in samples)
+
+
+def test_repeated_zero_timestamp_state_index_still_fails_liveness(telemetry_source):
+    endpoint = telemetry_source(lambda index: telemetry(index=1, ros_timestamp=0.0))
+    with Subscriber(endpoint, "state", hand="dex3") as reader:
+        with pytest.raises(TimeoutError):
+            reader.read_many(2, 0.3)
+
+
+def test_positive_stalled_ros_time_is_not_treated_as_unavailable(telemetry_source):
+    endpoint = telemetry_source(lambda index: telemetry(index=index, ros_timestamp=100.0))
+    with Subscriber(endpoint, "state", hand="dex3") as reader:
+        with pytest.raises(TimeoutError):
+            reader.read_many(2, 0.3)
+
+
+def test_state_timestamp_availability_change_requires_a_new_probe(telemetry_source):
+    # Alternate so the first received message does not depend on PUB/SUB startup.
+    endpoint = telemetry_source(lambda index: telemetry(index=index, ros_timestamp=0.0 if index % 2 else 100.0 + index))
+    with Subscriber(endpoint, "state", hand="dex3") as reader:
+        with pytest.raises(ValueError, match="timestamp availability changed"):
+            reader.read_many(3, 2.0)
+
+
+@pytest.mark.parametrize("changed_index", [9, 10])
+def test_timestamp_availability_change_cannot_hide_behind_old_indices(changed_index):
+    messages = iter([telemetry(index=10, ros_timestamp=0.0),
+                     telemetry(index=changed_index, ros_timestamp=100.0),
+                     telemetry(index=11, ros_timestamp=0.0)])
+
+    class RawSocket:
+        def poll(self, timeout_ms):
+            return True
+
+        def recv(self):
+            return next(messages)
+
+    reader = Subscriber.__new__(Subscriber)
+    reader.stream, reader.hand, reader._socket = "state", "dex3", RawSocket()
+    with pytest.raises(ValueError, match="timestamp availability changed"):
+        reader.read_many(2, 1.0)
+
+
+def test_cli_reports_sequence_liveness_and_missing_source_time(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "station.json"
+    path.write_text(json.dumps({"schema_version": 1, "robot_id": "test", "hand": "dex3",
+                               "camera_endpoint": "tcp://localhost:5555", "state_endpoint": "tcp://localhost:5557"}))
+
+    class RecordedSubscriber:
+        def __init__(self, endpoint, stream, **kwargs):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read_many(self, samples, timeout):
+            if self.stream == "state":
+                values = [decode_state(telemetry(index=index, ros_timestamp=0.0), hand="dex3") for index in range(samples)]
+            else:
+                values = [{"timestamp": 100.0 + index, "image": np.zeros((4, 6, 3), dtype=np.uint8)} for index in range(samples)]
+            return [value | {"received_monotonic": float(index)} for index, value in enumerate(values)]
+
+    monkeypatch.setattr("enpire.env.forge.g1.transport.Subscriber", RecordedSubscriber)
+    assert main(["g1", "observe", "--station", str(path)]) == 0
+    state = json.loads(capsys.readouterr().out)["observations"]["state"]
+    assert state["ok"] is True
+    assert state["source_timestamp_available"] is False
+    assert state["first_timestamp"] is None and state["last_timestamp"] is None
+    assert state["first_index"] == 0 and state["last_index"] == 4
+    assert state["liveness_basis"] == "source_index"
+    assert state["last_observation"]["raw_ros_timestamp"] == 0.0
+    assert main(["g1", "preflight", "--station", str(path)]) == 2
+    preflight_report = json.loads(capsys.readouterr().out)
+    assert preflight_report["streams_ready"] is True
+    assert preflight_report["motion_ready"] is False
+    assert any("source timestamp" in blocker for blocker in preflight_report["blockers"])
 
 
 def test_camera_decodes_jpeg_to_rgb_and_rejects_missing_timestamp():

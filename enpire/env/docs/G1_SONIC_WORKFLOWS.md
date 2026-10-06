@@ -59,6 +59,15 @@ The default is five advancing samples with a 15-second total deadline per stream
 Missing, malformed, or stalled streams fail. `observe --camera-only` can pass
 while SONIC is offline. Full observation requires its existing `g1_debug` state
 publisher; the tool never starts it. Camera reports describe decoded RGB images.
+The installed SONIC controller may send `ros_timestamp: 0` when no ROS2 output
+clock is available. In that case the observation exposes `timestamp: null`,
+preserves `raw_ros_timestamp: 0`, and reports `source_timestamp_available: false`.
+Advancing measured-state sequence indices establish subscription liveness;
+they do not provide source timing. Repeated indices still fail. With positive
+ROS timestamps, both index and timestamp must advance; a change in timestamp
+availability requires a new probe. No source time is synthesized from sequence
+indices or local receipt clocks. Camera/state alignment remains unverified,
+and preflight explicitly lists missing state source timing as a blocker.
 Dex3 state interleaves the left hand before the right arm to match the dataset's
 43-joint layout. Raw `left_hand_q` and `right_hand_q` preserve SONIC's Dex3 motor
 order (thumb 0/1/2, index 0/1, middle 0/1). The combined `state` reorders each hand

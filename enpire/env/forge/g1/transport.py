@@ -43,7 +43,16 @@ def decode_state(raw: bytes, *, hand: str) -> dict:
     quat = _vector(data, "base_quat", 4)
     if abs(sum(x * x for x in quat) - 1.0) > 0.02:
         raise ValueError("base_quat must be a unit quaternion in wxyz order")
-    result = {"index": index, "timestamp": _number(data.get("ros_timestamp"), "ros_timestamp"),
+    ros_timestamp = _number(data.get("ros_timestamp"), "ros_timestamp")
+    if ros_timestamp < 0:
+        raise ValueError("ros_timestamp must be nonnegative; zero means unavailable")
+    # SONIC explicitly returns zero without a ROS2 output clock. Never turn its
+    # sequence index or our receipt time into a fabricated source timestamp.
+    timestamp = ros_timestamp if ros_timestamp > 0 else None
+    result = {"index": index, "timestamp": timestamp,
+              "raw_ros_timestamp": ros_timestamp,
+              "source_timestamp_available": timestamp is not None,
+              "timestamp_clock": "ros" if timestamp is not None else None,
               "body_q": body, "root_orientation": quat, "hand": hand}
     if hand == "dex3":
         left = _vector(data, "left_hand_q", 7)
@@ -118,9 +127,13 @@ class Subscriber:
             raw = self._socket.recv()
             value = decode_camera(raw) if self.stream == "camera" else decode_state(raw, hand=self.hand)
             if results:
-                if value["timestamp"] <= results[-1]["timestamp"]:
-                    continue
-                if self.stream == "state" and value["index"] <= results[-1]["index"]:
+                previous = results[-1]
+                if self.stream == "state":
+                    if (value["timestamp"] is None) != (previous["timestamp"] is None):
+                        raise ValueError("State source timestamp availability changed; start a new probe")
+                    if value["index"] <= previous["index"]:
+                        continue
+                if value["timestamp"] is not None and value["timestamp"] <= previous["timestamp"]:
                     continue
             value["received_monotonic"] = time.monotonic()
             results.append(value)

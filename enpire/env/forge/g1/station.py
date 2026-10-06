@@ -54,6 +54,8 @@ def preflight(station: dict, observations: dict) -> dict:
     blockers = []
     if not streams_ready:
         blockers.append("Advancing camera and SONIC state streams have not both been verified")
+    if observations.get("state", {}).get("source_timestamp_available") is False:
+        blockers.append("SONIC state has no source timestamp; camera/state timing needs independent validation")
     if station["hand"] != "dex3":
         blockers.append("This bottle task requires a fitted, characterized hand; only Dex3 mapping is prepared")
     blockers.extend([
