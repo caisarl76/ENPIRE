@@ -7,9 +7,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 HANDS = ("none", "dex3", "inspire_ftp")
+CAMERA_PROTOCOLS = ("sonic_msgpack", "json_rgb_jpeg")
 _FIELDS = {
     "schema_version", "robot_id", "hand", "camera_endpoint", "state_endpoint",
-    "calibration_record", "operator_preflight_record",
+    "calibration_record", "operator_preflight_record", "camera_protocol", "camera_key",
 }
 
 
@@ -23,6 +24,12 @@ def load_station(path: Path) -> dict:
         raise ValueError("Station requires a nonempty robot_id")
     if data.get("hand") not in HANDS:
         raise ValueError(f"Station hand must be one of {HANDS}")
+    data.setdefault("camera_protocol", "sonic_msgpack")
+    data.setdefault("camera_key", "ego_view")
+    if data["camera_protocol"] not in CAMERA_PROTOCOLS:
+        raise ValueError(f"camera_protocol must be one of {CAMERA_PROTOCOLS}")
+    if not isinstance(data["camera_key"], str) or not data["camera_key"].strip():
+        raise ValueError("camera_key must be a nonempty string")
     for key in ("camera_endpoint", "state_endpoint"):
         value = data.get(key)
         if not isinstance(value, str):

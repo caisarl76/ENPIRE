@@ -49,6 +49,20 @@ python gear_sonic/camera/composed_camera.py --ego-view-camera realsense --port 5
 This command currently supplies RGB JPEG frames, not validated metric depth.
 Do not restart an existing camera server just to run observation tools.
 
+The station's optional `camera_protocol` and `camera_key` fields select the
+camera wire format explicitly. Existing records default to `sonic_msgpack` and
+`ego_view`, preserving the composed-camera protocol. For a running JSON/base64
+publisher that JPEG-encodes RGB arrays and expects no channel swap on decode,
+set `camera_protocol` to `json_rgb_jpeg` and `camera_key` to its actual stream
+name in the external station record. This reader preserves the JPEG-decoded RGB
+channels. The MessagePack reader instead converts normal decoded BGR JPEGs to
+RGB. Choosing the correct protocol includes choosing the color convention;
+JSON and MessagePack are not interchangeable merely by renaming the stream.
+The reader does not auto-detect a protocol or select a different camera key.
+Both modes require advancing finite source timestamps and valid JPEG images.
+Observation reports include the selected protocol/key. Stream delivery remains
+separate from camera identity, calibration, and cross-host timing validation.
+
 ```bash
 enpire g1 observe --station "$STATION_JSON" --camera-only --output "$CAMERA_REPORT"
 enpire g1 observe --station "$STATION_JSON" --output "$OBSERVATION_REPORT"

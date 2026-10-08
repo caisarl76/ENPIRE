@@ -42,7 +42,9 @@ def _probe(args: argparse.Namespace) -> tuple[dict, dict]:
     streams = ("camera",) if args.camera_only else ("camera", "state")
     for stream in streams:
         try:
-            with Subscriber(station[f"{stream}_endpoint"], stream, hand=station["hand"]) as reader:
+            with Subscriber(station[f"{stream}_endpoint"], stream, hand=station["hand"],
+                            camera_protocol=station["camera_protocol"],
+                            camera_key=station["camera_key"]) as reader:
                 values = reader.read_many(args.samples, args.timeout)
             summary = {"ok": True, "samples": len(values), "source_advances": True,
                        "first_timestamp": values[0]["timestamp"],
@@ -51,7 +53,8 @@ def _probe(args: argparse.Namespace) -> tuple[dict, dict]:
             if stream == "camera":
                 summary.update(image_shape=list(values[-1]["image"].shape),
                                image_dtype=str(values[-1]["image"].dtype), image_color_order="RGB",
-                               depth_verified=False)
+                               depth_verified=False, camera_protocol=station["camera_protocol"],
+                               camera_key=station["camera_key"])
             else:
                 source_time_available = values[-1]["source_timestamp_available"]
                 summary.update(first_index=values[0]["index"], last_index=values[-1]["index"],

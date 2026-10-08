@@ -209,6 +209,82 @@ def test_camera_decodes_jpeg_to_rgb_and_rejects_missing_timestamp():
         decode_camera(msgpack.packb(message))
 
 
+def rgb_json_camera(index=1, *, color=(255, 0, 0)):
+    """Match the active publisher: JPEG-encode RGB, decode without swapping."""
+    cv2 = pytest.importorskip("cv2")
+    rgb = np.full((8, 8, 3), color, dtype=np.uint8)
+    ok, jpeg = cv2.imencode(".jpg", rgb)
+    assert ok
+    return json.dumps({"images": {"egocentric": base64.b64encode(jpeg).decode()},
+                       "timestamps": {"egocentric": 123.0 + index / 30}}).encode()
+
+
+@pytest.mark.parametrize("color", [(255, 0, 0), (0, 0, 255)])
+def test_json_rgb_camera_preserves_red_and_blue_channels(color):
+    observation = decode_camera(rgb_json_camera(color=color),
+                                protocol="json_rgb_jpeg", key="egocentric")
+    assert observation["image"].shape == (8, 8, 3)
+    np.testing.assert_allclose(observation["image"][0, 0], color, atol=5)
+    assert observation["timestamp"] == pytest.approx(123.0 + 1 / 30)
+
+
+def test_camera_protocol_and_key_are_explicit_without_fallback():
+    raw = rgb_json_camera()
+    with pytest.raises(ValueError):
+        decode_camera(raw)
+    with pytest.raises(ValueError):
+        decode_camera(raw, protocol="json_rgb_jpeg", key="ego_view")
+    with pytest.raises(ValueError):
+        decode_camera(raw, protocol="guess", key="egocentric")
+
+
+@pytest.mark.parametrize("timestamp", [None, True, math.nan])
+def test_json_camera_rejects_invalid_source_time(timestamp):
+    data = json.loads(rgb_json_camera())
+    data["timestamps"]["egocentric"] = timestamp
+    with pytest.raises(ValueError):
+        decode_camera(json.dumps(data).encode(), protocol="json_rgb_jpeg", key="egocentric")
+
+
+def test_cli_reads_configured_json_camera_without_a_controller(tmp_path, telemetry_source, capsys):
+    endpoint = telemetry_source(rgb_json_camera)
+    path = tmp_path / "station.json"
+    path.write_text(json.dumps({"schema_version": 1, "robot_id": "test", "hand": "dex3",
+                               "camera_endpoint": endpoint, "state_endpoint": "tcp://localhost:5557",
+                               "camera_protocol": "json_rgb_jpeg", "camera_key": "egocentric"}))
+    assert main(["g1", "observe", "--station", str(path), "--camera-only",
+                 "--samples", "3", "--timeout", "2"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["motion_enabled"] is False
+    camera = report["observations"]["camera"]
+    assert camera["source_advances"] is True
+    assert camera["samples"] == 3
+    assert camera["camera_protocol"] == "json_rgb_jpeg"
+    assert camera["camera_key"] == "egocentric"
+    assert camera["image_color_order"] == "RGB"
+
+
+def test_legacy_station_keeps_composed_camera_defaults(tmp_path):
+    path = tmp_path / "station.json"
+    path.write_text(json.dumps({"schema_version": 1, "robot_id": "test", "hand": "dex3",
+                               "camera_endpoint": "tcp://localhost:5555",
+                               "state_endpoint": "tcp://localhost:5557"}))
+    station = load_station(path)
+    assert station["camera_protocol"] == "sonic_msgpack"
+    assert station["camera_key"] == "ego_view"
+
+
+@pytest.mark.parametrize("update", [{"camera_protocol": "guess"}, {"camera_protocol": None},
+                                     {"camera_key": ""}, {"camera_key": True}])
+def test_invalid_camera_configuration_fails_before_connecting(tmp_path, update):
+    path = tmp_path / "station.json"
+    data = {"schema_version": 1, "robot_id": "test", "hand": "dex3",
+            "camera_endpoint": "tcp://localhost:5555", "state_endpoint": "tcp://localhost:5557"}
+    path.write_text(json.dumps(data | update))
+    with pytest.raises(ValueError):
+        load_station(path)
+
+
 def test_stalled_source_does_not_pass_even_while_messages_arrive():
     zmq = pytest.importorskip("zmq")
     context = zmq.Context()

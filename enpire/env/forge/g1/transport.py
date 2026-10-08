@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import json
 import math
 import time
+
+from .station import CAMERA_PROTOCOLS
 
 
 def _number(value, name: str) -> float:
@@ -68,37 +71,55 @@ def decode_state(raw: bytes, *, hand: str) -> dict:
     return result
 
 
-def decode_camera(raw: bytes) -> dict:
-    """Decode the composed-camera ego JPEG into an RGB uint8 image."""
+def decode_camera(raw: bytes, *, protocol: str = "sonic_msgpack", key: str = "ego_view") -> dict:
+    """Decode an explicitly selected camera protocol into an RGB uint8 image.
+
+    sonic_msgpack carries normal JPEGs and needs OpenCV BGR-to-RGB conversion.
+    json_rgb_jpeg publishers encode RGB arrays with OpenCV; their decoded
+    arrays already have RGB channel order. Never guess the wire/color protocol.
+    """
     import cv2
     import numpy as np
 
-    data = _unpack(raw)
+    if protocol not in CAMERA_PROTOCOLS:
+        raise ValueError(f"Camera protocol must be one of {CAMERA_PROTOCOLS}")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("Camera key must be a nonempty string")
+    data = _unpack(raw) if protocol == "sonic_msgpack" else json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("Camera payload must be an object")
     images, timestamps = data.get("images"), data.get("timestamps")
     if not isinstance(images, dict) or not isinstance(timestamps, dict):
         raise ValueError("Camera message requires images and timestamps objects")
-    encoded = images.get("ego_view")
+    encoded = images.get(key)
     if isinstance(encoded, str):
         encoded = base64.b64decode(encoded, validate=True)
     if not isinstance(encoded, bytes) or not encoded:
-        raise ValueError("ego_view must contain a nonempty JPEG or base64 JPEG")
-    timestamp = _number(timestamps.get("ego_view"), "ego_view timestamp")
+        raise ValueError(f"{key} must contain a nonempty JPEG or base64 JPEG")
+    timestamp = _number(timestamps.get(key), f"{key} timestamp")
     image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        raise ValueError("ego_view JPEG did not decode")
-    return {"timestamp": timestamp, "image": cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+        raise ValueError(f"{key} JPEG did not decode")
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if protocol == "sonic_msgpack" else image
+    return {"timestamp": timestamp, "image": rgb,
             "jpeg_bytes": len(encoded)}
 
 
 class Subscriber:
     """A bounded, subscription-only transport; never creates a command publisher."""
 
-    def __init__(self, endpoint: str, stream: str, *, hand: str = "none"):
+    def __init__(self, endpoint: str, stream: str, *, hand: str = "none",
+                 camera_protocol: str = "sonic_msgpack", camera_key: str = "ego_view"):
         import zmq
 
         if stream not in ("camera", "state"):
             raise ValueError("Stream must be camera or state")
+        if camera_protocol not in CAMERA_PROTOCOLS:
+            raise ValueError(f"Camera protocol must be one of {CAMERA_PROTOCOLS}")
+        if not isinstance(camera_key, str) or not camera_key.strip():
+            raise ValueError("Camera key must be a nonempty string")
         self.stream, self.hand = stream, hand
+        self.camera_protocol, self.camera_key = camera_protocol, camera_key
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.SUB)
         self._socket.setsockopt(zmq.LINGER, 0)
@@ -125,7 +146,8 @@ class Subscriber:
             if not self._socket.poll(max(1, math.ceil(remaining * 1000))):
                 continue
             raw = self._socket.recv()
-            value = decode_camera(raw) if self.stream == "camera" else decode_state(raw, hand=self.hand)
+            value = (decode_camera(raw, protocol=self.camera_protocol, key=self.camera_key)
+                     if self.stream == "camera" else decode_state(raw, hand=self.hand))
             if results:
                 previous = results[-1]
                 if self.stream == "state":
