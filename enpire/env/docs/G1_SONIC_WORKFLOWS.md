@@ -206,6 +206,24 @@ different representation. A future adapter must reuse existing SONIC encoders,
 limits, timeout handling, and command-ownership mechanisms and characterize the
 chosen control mode in simulation before hardware trials.
 
+## Label recorded trials without the operator
+
+```bash
+enpire g1 verify-session --session "$SESSION_DIR" --output "$VERIFY_REPORT"
+```
+
+The session directory is a LeRobot `sonic_policy_streamer.py --trials` session
+(`trial_{i:03d}.npz` plus `results.jsonl`). Each trial's first grasp attempt is
+labelled from the measured right Dex3 closure alone: `no_grasp`, `missed`
+(closed on air), `held_not_released`, or `released`. Operator verdicts are read
+only for comparison. On robot sessions s01-s08 (41 trials), every first-attempt
+success was labelled `released`, and every miss and no-grasp matched. The two
+operator successes that needed a regrasp were labelled `missed`. The three drops
+were labelled `released`: opening the hand at the presentation pose looks the
+same as a handover. `handover_confirmed` therefore stays `null`. The head camera
+separates these cases (the recipient's hand is in view at a handover; in a drop
+the bottle falls or stays on the open palm), but no recipient check is implemented.
+
 ## Required physical gates
 
 Before any future motion command, complete the station checks and calibration

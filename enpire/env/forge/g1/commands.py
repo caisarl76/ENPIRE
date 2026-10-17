@@ -125,6 +125,18 @@ def _shadow_adapter(args: argparse.Namespace) -> int:
     return 0
 
 
+def _verify_session(args: argparse.Namespace) -> int:
+    from .verify import verify_session
+
+    try:
+        report = verify_session(args.session)
+    except (OSError, KeyError, ValueError) as error:
+        _emit({"ok": False, "error": str(error), "motion_enabled": False}, None)
+        return 2
+    _emit(report, args.output)
+    return 0
+
+
 def add_g1_parser(commands) -> None:
     parser = commands.add_parser("g1", help="Inspect G1 SONIC streams and datasets without motion")
     actions = parser.add_subparsers(dest="g1_command", required=True)
@@ -156,3 +168,7 @@ def add_g1_parser(commands) -> None:
     shadow.add_argument("--encoder", type=Path, required=True, help="Local SONIC zmq_planner_sender.py")
     shadow.add_argument("--output", type=Path, required=True, help="New summary JSON; no command packets")
     shadow.set_defaults(handler=_shadow_adapter)
+    verify = actions.add_parser("verify-session", help="Label recorded trials from the right Dex3 hand; offline")
+    verify.add_argument("--session", type=Path, required=True, help="LeRobot streamer --session-dir")
+    verify.add_argument("--output", type=Path)
+    verify.set_defaults(handler=_verify_session)
