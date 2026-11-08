@@ -5,6 +5,30 @@ policy:
   credentials_allowed: false
 
 repositories:
+  gear_sonic_observation_protocol:
+    path_hint: GR00T-WholeBodyControl
+    branch: vr3pt-cleanup-minimal-official
+    commit: 7c6d710b783a984ede504d24a65bc70e486b3b1d
+    include:
+      - gear_sonic/camera/sensor_server.py
+      - gear_sonic/utils/data_collection/zmq_state_subscriber.py
+      - gear_sonic/utils/teleop/zmq/zmq_planner_sender.py
+      - gear_sonic/scripts/pico_manager_thread_server.py
+      - gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/output_interface/zmq_output_handler.hpp
+      - gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_endpoint_interface.hpp
+      - gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/include/input_interface/zmq_manager.hpp
+      - gear_sonic/scripts/run_data_exporter.py
+      - decoupled_wbc/control/robot_model/robot_model.py
+      - decoupled_wbc/control/robot_model/supplemental_info/g1/g1_supplemental_info.py
+      - gear_sonic_deploy/g1/g1_29dof_with_hand.xml
+    note: Subscription-only observations and socket-free command qualification reuse protocol boundaries; no control algorithm copied. Station reports record deployed source revisions and local modifications separately.
+    characterization:
+      - tests/enpire/g1/test_observation.py
+      - tests/enpire/g1/test_dataset.py
+      - tests/enpire/g1/test_preview.py
+      - tests/enpire/g1/test_preview_model.py
+      - tests/enpire/g1/test_adapter.py
+      - tests/enpire/g1/test_shadow.py
   agentlace_data_restoration:
     path_hint: minimal_policy
     branch: tonghe/ziptie-autorl-merge-wenlix

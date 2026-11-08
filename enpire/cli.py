@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Sequence
 
 from enpire import __version__
+from enpire.env.forge.g1.commands import add_g1_parser
 from enpire.env.forge.registry import default_skill_registry, default_tool_registry
 from enpire.env.forge.services.commands import add_services_parser
 from enpire.env.forge.yam.commands import add_station_parser
@@ -109,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_cap_parser(commands)
     add_services_parser(commands)
     add_rl_parser(commands)
+    add_g1_parser(commands)
     return parser
 
 

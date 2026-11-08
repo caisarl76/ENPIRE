@@ -1,0 +1,172 @@
+"""Read the existing SONIC camera and g1_debug protocols without control sockets."""
+
+from __future__ import annotations
+
+import base64
+import json
+import math
+import time
+
+from .station import CAMERA_PROTOCOLS
+
+
+def _number(value, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{name} must be finite numeric data")
+    return float(value)
+
+
+def _vector(data: dict, name: str, size: int) -> list[float]:
+    values = data.get(name)
+    if not isinstance(values, (list, tuple)) or len(values) != size:
+        raise ValueError(f"{name} must contain {size} joint/component values")
+    return [_number(value, name) for value in values]
+
+
+def _unpack(raw: bytes) -> dict:
+    import msgpack
+
+    value = msgpack.unpackb(raw, raw=False)
+    if not isinstance(value, dict):
+        raise ValueError("Expected a MessagePack object")
+    return value
+
+
+def decode_state(raw: bytes, *, hand: str) -> dict:
+    """Return measured state; dataset-compatible state is available only for Dex3."""
+    if hand not in ("none", "dex3", "inspire_ftp"):
+        raise ValueError("Unknown hand type")
+    if not raw.startswith(b"g1_debug"):
+        raise ValueError("Expected the g1_debug topic prefix")
+    data = _unpack(raw[len(b"g1_debug"):])
+    index = data.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError("State index must be a nonnegative integer")
+    body = _vector(data, "body_q", 29)
+    quat = _vector(data, "base_quat", 4)
+    if abs(sum(x * x for x in quat) - 1.0) > 0.02:
+        raise ValueError("base_quat must be a unit quaternion in wxyz order")
+    ros_timestamp = _number(data.get("ros_timestamp"), "ros_timestamp")
+    if ros_timestamp < 0:
+        raise ValueError("ros_timestamp must be nonnegative; zero means unavailable")
+    # SONIC explicitly returns zero without a ROS2 output clock. Never turn its
+    # sequence index or our receipt time into a fabricated source timestamp.
+    timestamp = ros_timestamp if ros_timestamp > 0 else None
+    result = {"index": index, "timestamp": timestamp,
+              "raw_ros_timestamp": ros_timestamp,
+              "source_timestamp_available": timestamp is not None,
+              "timestamp_clock": "ros" if timestamp is not None else None,
+              "body_q": body, "root_orientation": quat, "hand": hand}
+    if hand == "dex3":
+        left = _vector(data, "left_hand_q", 7)
+        right = _vector(data, "right_hand_q", 7)
+        # Keep raw motor order in hand_q; only state uses the dataset order.
+        # Dex3 telemetry is thumb0/1/2, index0/1, middle0/1.
+        # The dataset stores index0/1, middle0/1, thumb0/1/2.
+        left_dataset = left[3:] + left[:3]
+        right_dataset = right[3:] + right[:3]
+        result.update(left_hand_q=left, right_hand_q=right,
+                      state=body[:22] + left_dataset + body[22:] + right_dataset)
+    # Firmware variants may add torque or visualization fields; no map-size assumptions.
+    return result
+
+
+def decode_camera(raw: bytes, *, protocol: str = "sonic_msgpack", key: str = "ego_view") -> dict:
+    """Decode an explicitly selected camera protocol into an RGB uint8 image.
+
+    sonic_msgpack carries normal JPEGs and needs OpenCV BGR-to-RGB conversion.
+    json_rgb_jpeg publishers encode RGB arrays with OpenCV; their decoded
+    arrays already have RGB channel order. Never guess the wire/color protocol.
+    """
+    import cv2
+    import numpy as np
+
+    if protocol not in CAMERA_PROTOCOLS:
+        raise ValueError(f"Camera protocol must be one of {CAMERA_PROTOCOLS}")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("Camera key must be a nonempty string")
+    data = _unpack(raw) if protocol == "sonic_msgpack" else json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("Camera payload must be an object")
+    images, timestamps = data.get("images"), data.get("timestamps")
+    if not isinstance(images, dict) or not isinstance(timestamps, dict):
+        raise ValueError("Camera message requires images and timestamps objects")
+    encoded = images.get(key)
+    if isinstance(encoded, str):
+        encoded = base64.b64decode(encoded, validate=True)
+    if not isinstance(encoded, bytes) or not encoded:
+        raise ValueError(f"{key} must contain a nonempty JPEG or base64 JPEG")
+    timestamp = _number(timestamps.get(key), f"{key} timestamp")
+    image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError(f"{key} JPEG did not decode")
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if protocol == "sonic_msgpack" else image
+    return {"timestamp": timestamp, "image": rgb,
+            "jpeg_bytes": len(encoded)}
+
+
+class Subscriber:
+    """A bounded, subscription-only transport; never creates a command publisher."""
+
+    def __init__(self, endpoint: str, stream: str, *, hand: str = "none",
+                 camera_protocol: str = "sonic_msgpack", camera_key: str = "ego_view"):
+        import zmq
+
+        if stream not in ("camera", "state"):
+            raise ValueError("Stream must be camera or state")
+        if camera_protocol not in CAMERA_PROTOCOLS:
+            raise ValueError(f"Camera protocol must be one of {CAMERA_PROTOCOLS}")
+        if not isinstance(camera_key, str) or not camera_key.strip():
+            raise ValueError("Camera key must be a nonempty string")
+        self.stream, self.hand = stream, hand
+        self.camera_protocol, self.camera_key = camera_protocol, camera_key
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.LINGER, 0)
+        self._socket.setsockopt(zmq.CONFLATE, 1)
+        self._socket.setsockopt(zmq.SUBSCRIBE, b"g1_debug" if stream == "state" else b"")
+        try:
+            self._socket.connect(endpoint)
+        except Exception:
+            self.close()
+            raise
+
+    def read_many(self, samples: int, timeout: float) -> list[dict]:
+        """Require advancing source samples within one total deadline."""
+        if isinstance(samples, bool) or not isinstance(samples, int) or samples < 2:
+            raise ValueError("At least two samples are required to establish advancement")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Timeout must be positive and finite")
+        deadline = time.monotonic() + timeout
+        results = []
+        while len(results) < samples:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"{self.stream}: received {len(results)}/{samples} advancing samples; source absent or stalled")
+            if not self._socket.poll(max(1, math.ceil(remaining * 1000))):
+                continue
+            raw = self._socket.recv()
+            value = (decode_camera(raw, protocol=self.camera_protocol, key=self.camera_key)
+                     if self.stream == "camera" else decode_state(raw, hand=self.hand))
+            if results:
+                previous = results[-1]
+                if self.stream == "state":
+                    if (value["timestamp"] is None) != (previous["timestamp"] is None):
+                        raise ValueError("State source timestamp availability changed; start a new probe")
+                    if value["index"] <= previous["index"]:
+                        continue
+                if value["timestamp"] is not None and value["timestamp"] <= previous["timestamp"]:
+                    continue
+            value["received_monotonic"] = time.monotonic()
+            results.append(value)
+        return results
+
+    def close(self) -> None:
+        self._socket.close(linger=0)
+        self._context.term()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
